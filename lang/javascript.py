@@ -23,48 +23,38 @@ from functools import lru_cache
 
 EXTS = ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs')
 
-# Directives, not prose: these change lint results, type checking, coverage, bundler
-# output or source maps. Erring toward keeping is cheap (a stray comment survives);
-# erring toward stripping can silently change build output.
 _KEEP_ALTERNATIVES = (
-    r"^\s*/[/*]+\s*<",                          # /// <reference ... />, <amd-module ... />
-    r"^\s*/\*+\s*globals?\b",                   # /* global foo */ linter env (not prose "global")
+    r"^\s*/[/*]+\s*<",
+    r"^\s*/\*+\s*globals?\b",
 )
 
-# The driver matches KEEP with re.match against the comment INCLUDING its // or
-# /* opener, so anything that can appear after the opener needs a prefix to be
-# reachable. Without it these never fired: a strip run removed live
-# eslint-disable-next-line and /* @__PURE__ */ annotations.
 _KEEP_ANYWHERE = (
-    r"eslint",                                  # eslint-disable*/-enable*/-env, typescript-eslint
+    r"eslint",
     r"tslint|jshint|jslint",
-    r"@ts-[a-z-]+",                             # @ts-ignore @ts-expect-error @ts-nocheck @ts-check
+    r"@ts-[a-z-]+",
     r"prettier-ignore",
     r"(?:istanbul|c8|v8|node|deno)\s+ignore",
     r"biome-ignore",
-    r"webpack[A-Za-z]*",                        # webpackChunkName and every other magic comment
+    r"webpack[A-Za-z]*",
     r"@vite-ignore",
-    r"[@\#]__[A-Za-z0-9_]+__",                  # #__PURE__ @__PURE__ @__NO_SIDE_EFFECTS__
+    r"[@\#]__[A-Za-z0-9_]+__",
     r"sourceMappingURL|sourceURL",
     r"@license|@preserve|@copyright|@internal",
     r"SPDX-[A-Za-z-]+",
-    r"@jsx[A-Za-z]*",                           # @jsx, @jsxImportSource, @jsxRuntime, @jsxFrag
+    r"@jsx[A-Za-z]*",
     r"@flow",
 )
 _KEEP_ALTERNATIVES += tuple(r"[\s\S]*?" + p for p in _KEEP_ANYWHERE)
 KEEP = re.compile("|".join("(?:%s)" % p for p in _KEEP_ALTERNATIVES), re.IGNORECASE)
 
-_FALLBACK_TS_DIR = '/home/dcl/workspaces/mn-rebase'
+_FALLBACK_TS_DIR = os.environ.get('TS_FALLBACK_DIR', '')
 _NIX_TS = 'nixpkgs#nodePackages.typescript'
-
 
 class ToolchainError(RuntimeError):
     """node or the typescript package could not be used."""
 
-
 class ParseError(ValueError):
     """The file does not parse; no normal form can be trusted for it."""
-
 
 _RESOLVE_PROBE = r"""
 let p = '';
@@ -200,7 +190,6 @@ function analyze(ts, text, kindName, want) {
 }
 """
 
-
 def _node_argv() -> list[str]:
     if shutil.which('node'):
         return ['node']
@@ -208,14 +197,13 @@ def _node_argv() -> list[str]:
         return ['nix', 'shell', 'nixpkgs#nodejs', '--command', 'node']
     raise ToolchainError("node is not on PATH and nix is unavailable to provide it")
 
-
 @lru_cache(maxsize=32)
 def _resolve_typescript(start_dir: str) -> str:
     """Absolute path of the typescript module to require.
 
     Order: a repo-local / NODE_PATH-visible install found from ``start_dir`` upward,
-    then the known mn-rebase checkout, then a nix shell. Local wins so a repo is
-    analyzed by the very compiler it builds with.
+    then the checkout named by ``TS_FALLBACK_DIR`` if it is set, then a nix shell.
+    Local wins so a repo is analyzed by the very compiler it builds with.
     """
     node = _node_argv()
     env = dict(os.environ)
@@ -224,8 +212,9 @@ def _resolve_typescript(start_dir: str) -> str:
     local_env = dict(env, STRIP_FROM_DIR=start_dir or os.getcwd())
     attempts.append((node + ['-e', _RESOLVE_PROBE], local_env, 'local resolution'))
 
-    fb_env = dict(env, STRIP_FROM_DIR=_FALLBACK_TS_DIR)
-    attempts.append((node + ['-e', _RESOLVE_PROBE], fb_env, 'fallback ' + _FALLBACK_TS_DIR))
+    if _FALLBACK_TS_DIR:
+        fb_env = dict(env, STRIP_FROM_DIR=_FALLBACK_TS_DIR)
+        attempts.append((node + ['-e', _RESOLVE_PROBE], fb_env, 'fallback ' + _FALLBACK_TS_DIR))
 
     if shutil.which('nix'):
         nix_env = dict(env)
@@ -250,7 +239,6 @@ def _resolve_typescript(start_dir: str) -> str:
         "  tried:\n    " + "\n    ".join(problems) +
         "\n  fix: npm install typescript in the repo, set NODE_PATH, or make nix available")
 
-
 def _run(request: dict, start_dir: str) -> dict:
     request = dict(request, tsPath=_resolve_typescript(start_dir))
     proc = subprocess.run(_node_argv() + ['-e', _NODE_PROGRAM],
@@ -259,11 +247,10 @@ def _run(request: dict, start_dir: str) -> dict:
         raise ToolchainError('typescript scan failed: ' + (proc.stderr.strip() or 'exit %d' % proc.returncode))
     return json.loads(proc.stdout)
 
-
 @lru_cache(maxsize=8)
-def _analyze(src: str, kinds: tuple[str, ...], want: tuple[str, ...], start_dir: str) -> dict:
-    return _run({'text': src, 'kinds': list(kinds), 'want': list(want)}, start_dir)['results']
-
+def _analyze(src: str, kinds: tuple[str, ...], start_dir: str) -> dict:
+    want = ['comments', 'templates', 'tokens']
+    return _run({'text': src, 'kinds': list(kinds), 'want': want}, start_dir)['results']
 
 def _script_kind(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
@@ -273,17 +260,12 @@ def _script_kind(path: str) -> str:
         return 'TSX'
     if ext == '.jsx':
         return 'JSX'
-    return 'JS'   # ScriptKind.JS already selects the JSX language variant
-
+    return 'JS'
 
 def _kinds_for(ext: str | None) -> tuple[str, ...]:
-    # Without an extension, agree-with-both: a comment reported by only one parse mode
-    # is dropped. `<div>// hi</div>` is JSX text in TSX mode but a comment in TS mode,
-    # and a missed comment merely goes unstripped while a phantom one corrupts the file.
     if not ext:
         return ('TS', 'TSX')
     return (_script_kind('x' + ext),)
-
 
 def _line_starts(data: bytes) -> list[int]:
     starts = [0]
@@ -293,11 +275,9 @@ def _line_starts(data: bytes) -> list[int]:
         i = data.find(b'\n', i + 1)
     return starts
 
-
 def _locate(starts: list[int], off: int) -> tuple[int, int]:
     row = bisect.bisect_right(starts, off) - 1
     return row + 1, off - starts[row]
-
 
 def comments(src: str, ext: str | None = None) -> list[tuple[int, int, int, str]]:
     """Every comment in ``src``, in source order.
@@ -317,7 +297,7 @@ def comments(src: str, ext: str | None = None) -> list[tuple[int, int, int, str]
     ``ext`` (e.g. ``'.tsx'``) picks the parse mode; without it both TS and TSX are
     parsed and only comments both agree on are returned.
     """
-    results = _analyze(src, _kinds_for(ext), ('comments',), os.getcwd())
+    results = _analyze(src, _kinds_for(ext), os.getcwd())
     agreed = None
     for kind in results:
         found = {(c[0], c[1]): c[2] for c in results[kind]['comments']}
@@ -330,7 +310,6 @@ def comments(src: str, ext: str | None = None) -> list[tuple[int, int, int, str]
         out.append((line, col_start, col_end, text))
     return out
 
-
 def protected_lines(src: str, ext: str | None = None) -> set[int]:
     """1-based lines that are blank *as content*, not as formatting.
 
@@ -339,7 +318,7 @@ def protected_lines(src: str, ext: str | None = None) -> set[int]:
     template token, so blank lines inside a ``${...}`` substitution -- which really are
     formatting -- are correctly left unprotected.
     """
-    results = _analyze(src, _kinds_for(ext), ('templates',), os.getcwd())
+    results = _analyze(src, _kinds_for(ext), os.getcwd())
     starts = _line_starts(src.encode('utf-8'))
     lines = src.splitlines()
     out: set[int] = set()
@@ -351,7 +330,6 @@ def protected_lines(src: str, ext: str | None = None) -> set[int]:
                 if row <= len(lines) and not lines[row - 1].strip():
                     out.add(row)
     return out
-
 
 def normalize(path: str, src: str | None = None) -> str:
     """Comment-free normal form of ``path``; raises ``ParseError`` if it does not parse.
@@ -365,7 +343,7 @@ def normalize(path: str, src: str | None = None) -> str:
             src = fh.read()
     kind = _script_kind(path)
     start_dir = os.path.dirname(os.path.abspath(path)) or os.getcwd()
-    result = _analyze(src, (kind,), ('tokens',), start_dir)[kind]
+    result = _analyze(src, (kind,), start_dir)[kind]
     if result['errors']:
         first = result['errors'][0]
         raise ParseError('%s:%d:%d: %s (%d parse error%s)' % (

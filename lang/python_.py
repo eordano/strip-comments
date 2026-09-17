@@ -16,24 +16,16 @@ from functools import lru_cache
 
 EXTS = ('.py', '.pyi')
 
-# Directives, not prose: removing these changes behaviour or tooling results.
-# `!` is the shebang and `-*-` the PEP 263 encoding declaration; both are only
-# meaningful on lines 1-2, but a `#!`/`# -*-` further down is prose so rare that
-# keeping it costs one stray line and guarantees the real ones survive.
 KEEP = re.compile(
     r"^#\s*(type:|noqa|pylint:|mypy:|ruff:|fmt:|isort:|nosec|pragma:|shellcheck|"
     r"-\*-|!)"
 )
 
-# Token types whose text is literal string CONTENT. FSTRING_MIDDLE / TSTRING_MIDDLE
-# exist from 3.12 / 3.14 on and cover only the literal chunks, so a blank line in a
-# {...} replacement field stays unprotected -- there it really is formatting.
 _STRING_TOKENS = frozenset(
     getattr(tokenize, name)
     for name in ('STRING', 'FSTRING_MIDDLE', 'TSTRING_MIDDLE')
     if hasattr(tokenize, name)
 )
-
 
 @lru_cache(maxsize=8)
 def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], frozenset[int]]:
@@ -46,10 +38,8 @@ def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], frozenset[int]]:
             protected.update(range(tok.start[0] + 1, tok.end[0] + 1))
     return found, frozenset(protected)
 
-
 def comments(src: str) -> list[tuple[int, int, int, str]]:
     return list(_scan(src)[0])
-
 
 def protected_lines(src: str) -> set[int]:
     """Lines whose blankness is string content, not formatting.
@@ -59,7 +49,6 @@ def protected_lines(src: str) -> set[int]:
     change, not a cosmetic one.
     """
     return set(_scan(src)[1])
-
 
 def normalize(path: str) -> str:
     """Comment-free normal form; raises SyntaxError/ValueError if `path` does not parse.

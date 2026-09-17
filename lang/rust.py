@@ -46,26 +46,18 @@ from functools import lru_cache
 
 EXTS = ('.rs',)
 
-# Directives, not prose. Every alternative matches from the START of the comment
-# text, because the driver tests them with `KEEP.match(text.strip())`.
 _KEEP_ALTERNATIVES = (
-    # Doc comments -> #[doc] attributes -> rustdoc output and doctests.
-    r"///(?!/)",                                     # outer line doc
-    r"//!",                                          # inner line doc
-    r"/\*\*(?![*/])",                                # outer block doc
-    r"/\*!",                                         # inner block doc
-    # compiletest / ui_test / trybuild: the comment IS the assertion.
-    r"//@",                                          # //@ run-pass, //@ edition: ...
-    r"//~",                                          # //~ ERROR expected diagnostic
-    # Tools that read their directives out of comment text.
-    r"/[/*][^\n]*\bcbindgen\s*:",                    # cbindgen:ignore, cbindgen:field-names
-    r"/[/*][^\n]*\b(?:GRCOV|LCOV)_EXCL_",            # coverage exclusion markers
+    r"///(?!/)",
+    r"//!",
+    r"/\*\*(?![*/])",
+    r"/\*!",
+    r"//@",
+    r"//~",
+    r"/[/*][^\n]*\bcbindgen\s*:",
+    r"/[/*][^\n]*\b(?:GRCOV|LCOV)_EXCL_",
     r"/[/*][^\n]*\bcoverage\s*:\s*(?:ignore|off|on)",
     r"/[/*][^\n]*\b(?:ignore-tidy|tidy-alphabetical)-",
-    # clippy::undocumented_unsafe_blocks accepts an `unsafe` block only when a
-    # SAFETY comment precedes it, and real crates enable that lint.
     r"/[/*][/*!]?\s*(?:SAFETY|INVARIANT)\s*:",
-    # Provenance and editor modelines.
     r"/[/*][^\n]*SPDX-[A-Za-z-]+",
     r"/[/*][^\n]*@(?:license|preserve|copyright|generated)\b",
     r"//\s*(?:vim?|ex|emacs)\s*:",
@@ -73,39 +65,18 @@ _KEEP_ALTERNATIVES = (
 )
 KEEP = re.compile("|".join("(?:%s)" % p for p in _KEEP_ALTERNATIVES), re.IGNORECASE)
 
-# NOT in KEEP, deliberately: `rustfmt::skip` and `allow(clippy::…)` are
-# ATTRIBUTES (`#[rustfmt::skip]`, `#[allow(clippy::needless_range_loop)]`), never
-# comments. A `// rustfmt::skip` line is inert cargo-cult and is prose here.
-
-# Rust's Pattern_White_Space, no more: U+00A0 and friends are NOT whitespace to
-# the lexer, and treating them as such would collapse them out of a normal form.
 _WS = frozenset(' \t\n\r\x0b\x0c\x85\u200e\u200f\u2028\u2029')
 
-# Where the scan may need to stop. Everything else is ordinary code that is
-# copied through, which keeps the loop off the per-character path. The class
-# must cover every character of _WS: U+200E and U+200F are Pattern_White_Space
-# to Rust but are Cf, not whitespace, to Python's `\s`, so without naming them
-# the scan walks past a separator the normal form is supposed to collapse and a
-# strip beside one reverts for no reason.
 _INTERESTING = re.compile(r'[\s‎‏"\'/]|[bcr]{1,2}#*"')
 
-_RAW_STRING = re.compile(r'(?:b|c)?r(#*)"')     # r"  r#"  br##"  cr#"
-_ESC_STRING = re.compile(r'(?:b|c)"')           # b"  c"   (plain " is handled directly)
-_IDENT_CHAR = re.compile(r'\w', re.UNICODE)     # an r/b/c inside a name, not a prefix
+_RAW_STRING = re.compile(r'(?:b|c)?r(#*)"')
+_ESC_STRING = re.compile(r'(?:b|c)"')
+_IDENT_CHAR = re.compile(r'\w', re.UNICODE)
 
-# The only characters a separator never has to survive next to. No Rust token of
-# more than one character contains a bracket, so nothing can fuse across one:
-# `any(/*c*/)` -> `any()` cannot change the token stream, and a normal form that
-# insisted on the space would revert that strip for no reason. Everything else
-# -- word characters, and every punctuation character that can start or continue
-# a multi-character operator -- keeps its separator, which is what catches
-# `x/*c*/as` fusing into `xas` and `+/*c*/=` into `+=`.
 _DELIMS = frozenset('()[]{}')
-
 
 class ParseError(ValueError):
     """The file does not lex; no normal form can be trusted for it."""
-
 
 def _line_starts(src: str) -> list[int]:
     starts = [0]
@@ -115,11 +86,9 @@ def _line_starts(src: str) -> list[int]:
         i = src.find('\n', i + 1)
     return starts
 
-
 def _locate(starts: list[int], off: int) -> tuple[int, int]:
     row = bisect.bisect_right(starts, off) - 1
     return row + 1, off - starts[row]
-
 
 def is_doc(text: str) -> bool:
     """Does this comment desugar to a #[doc] attribute?
@@ -133,7 +102,6 @@ def is_doc(text: str) -> bool:
             text.startswith('///') and not text.startswith('////'))
     return text.startswith('/*!') or (
         text.startswith('/**') and not text.startswith(('/***', '/**/')))
-
 
 def _block_end(src: str, i: int) -> int:
     """End offset of the NESTING block comment opening at `i`.
@@ -159,7 +127,6 @@ def _block_end(src: str, i: int) -> int:
         j += 1
     raise ParseError('unterminated block comment opened at offset %d' % i)
 
-
 def _escaped_string_end(src: str, k: int) -> int:
     """End offset of a `"`-terminated string whose body starts at `k`."""
     n = len(src)
@@ -167,13 +134,12 @@ def _escaped_string_end(src: str, k: int) -> int:
     while j < n:
         c = src[j]
         if c == '\\':
-            j += 2          # covers \" \\ \n \u{..} and the \<newline> continuation
+            j += 2
             continue
         if c == '"':
             return j + 1
         j += 1
     raise ParseError('unterminated string literal ending at offset %d' % k)
-
 
 def _quote_end(src: str, i: int) -> int:
     """End offset of the char literal OR lifetime/label starting at `i`.
@@ -185,38 +151,30 @@ def _quote_end(src: str, i: int) -> int:
     n = len(src)
     if i + 1 >= n:
         raise ParseError('dangling quote at offset %d' % i)
-    if src[i + 1] == '\\':          # an escape can only open a char literal
+    if src[i + 1] == '\\':
         j = i + 2
         if j >= n:
             raise ParseError('unterminated character literal at offset %d' % i)
         if src[j] == 'u' and j + 1 < n and src[j + 1] == '{':
-            # \u{..} takes 1-6 hex digits but UNBOUNDED underscores, so the brace
-            # is the only terminator: litrs tests '\u{1_F6_02_____}', which any
-            # length cap would reject as unterminated.
             close = src.find('}', j + 2)
             if close < 0 or '\n' in src[j:close]:
                 raise ParseError('unterminated \\u escape at offset %d' % i)
             j = close + 1
         elif src[j] == 'x':
-            j += 3                                    # \xNN
+            j += 3
         else:
-            j += 1                                    # \n \r \t \0 \\ \' \"
+            j += 1
         if j < n and src[j] == "'":
             return j + 1
         raise ParseError('unterminated character literal at offset %d' % i)
     if i + 2 < n and src[i + 2] == "'":
-        return i + 3                                  # 'x' -- one scalar, quoted
-    j = i + 1                                         # 'a  'static  'outer:
+        return i + 3
+    j = i + 1
     while j < n and (src[j].isalnum() or src[j] == '_'):
         j += 1
     if j == i + 1:
-        # Neither a closed char literal nor a named lifetime: `' ` or `'>`. Rust
-        # has no such token, so the file does not lex and no normal form for it
-        # can be trusted -- returning one would let a strip be "proved" against
-        # a source we mis-read.
         raise ParseError('unterminated character literal at offset %d' % i)
     return j
-
 
 @lru_cache(maxsize=8)
 def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[int], str]:
@@ -229,12 +187,12 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
     starts = _line_starts(src)
     n = len(src)
     found: list[tuple[int, int, int, str]] = []
-    verbatim: list[tuple[int, int]] = []    # spans whose interior lines are CONTENT
+    verbatim: list[tuple[int, int]] = []
     out: list[str] = []
-    last = ''               # last code character emitted
-    sep = False             # a separator is owed, once we know what follows it
+    last = ''
+    sep = False
     i = 0
-    pending = 0             # start of the run of ordinary code not yet emitted
+    pending = 0
 
     def push(text: str) -> None:
         """Emit code, resolving any separator owed to the run before it."""
@@ -250,16 +208,9 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
 
     def separator() -> None:
         nonlocal sep
-        if last:            # a leading separator is nothing; suppress it
+        if last:
             sep = True
 
-    # A leading `#!` line that does not continue with `[` is a SHEBANG: rustc
-    # discards the whole line before lexing, so nothing in it is a token and
-    # nothing in it is a comment either. Reporting a `//` there (`#!/usr/bin//env
-    # cargo`) would let the driver rewrite an executable header, and because the
-    # normal form drops the same text the gate could not object. Skip past it;
-    # `pending` stays 0, so the line is still emitted verbatim and any edit to it
-    # does move the normal form.
     if src.startswith('#!'):
         eol = src.find('\n')
         head = src[2:] if eol < 0 else src[2:eol]
@@ -294,11 +245,8 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
             push(src[pending:k])
             separator()
             if is_doc(text):
-                push(text)      # a #[doc] attribute: part of the program, kept
+                push(text)
                 separator()
-                # Its body is the attribute's VALUE -- markdown, and doctest
-                # source inside a fence -- so a blank line in a `/** */` or
-                # `/*! */` body is content, exactly like one inside a string.
                 verbatim.append((k, j))
             pending = i = j
             continue
@@ -306,12 +254,12 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
         if c == '"':
             j = _escaped_string_end(src, k + 1)
             verbatim.append((k, j))
-            i = j                                     # literal text stays verbatim
+            i = j
             continue
 
         if c in 'bcr':
             if k and _IDENT_CHAR.match(src[k - 1]):
-                i = k + 1                             # the b in `0b1010`, not a prefix
+                i = k + 1
                 continue
             raw = _RAW_STRING.match(src, k)
             if raw:
@@ -323,7 +271,7 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
             else:
                 esc = _ESC_STRING.match(src, k)
                 if not esc:
-                    i = k + 1                         # `r#type`: a raw identifier
+                    i = k + 1
                     continue
                 j = _escaped_string_end(src, esc.end())
             verbatim.append((k, j))
@@ -334,7 +282,7 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
             i = _quote_end(src, k)
             continue
 
-        i = k + 1               # a division `/`, or whitespace Rust does not lex
+        i = k + 1
 
     push(src[pending:])
 
@@ -346,10 +294,8 @@ def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[in
 
     return tuple(found), frozenset(protected), ''.join(out)
 
-
 def comments(src: str) -> list[tuple[int, int, int, str]]:
     return list(_scan(src)[0])
-
 
 def protected_lines(src: str) -> set[int]:
     """Lines whose blankness is content, not formatting.
@@ -364,7 +310,6 @@ def protected_lines(src: str) -> set[int]:
     rewrote one and the gate had to revert the whole file.
     """
     return set(_scan(src)[1])
-
 
 def normalize(path: str) -> str:
     """Comment-free normal form; raises ParseError if `path` does not lex.

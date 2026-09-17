@@ -52,6 +52,25 @@ LANGDIR = os.path.join(HERE, "lang")
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", "vendor", "dist", "build", ".venv", "target"}
 
+# Generated source, by the markers that name it. Same doctrine as SKIP_DIRS and
+# the same reason: a normal form proves an edit is comment-only, it does not
+# make the edit worth making, and regenerating the file discards it anyway.
+SKIP_SUFFIXES = (".gen.ts", ".gen.js", ".generated.ts", ".generated.js", "_pb2.py", ".pb.go")
+
+
+def _offlimits(path: str) -> bool:
+    """Vendored or generated, so not ours to strip.
+
+    Applied to DISCOVERED files only — a path named explicitly on the command
+    line is the operator's decision and passes through. Both discovery branches
+    below consult it: `SKIP_DIRS` used to be filtered in the `os.walk` fallback
+    alone, which meant it did nothing at all in a git repo, i.e. in every real
+    run. That is how a 720-file vendored tree turned one `strip --all` into
+    seven minutes of one-node-process-per-file with no output.
+    """
+    parts = set(path.replace("\\", "/").split("/"))
+    return bool(parts & SKIP_DIRS) or path.endswith(SKIP_SUFFIXES)
+
 
 def _load_langs() -> dict[str, object]:
     by_ext: dict[str, object] = {}
@@ -82,13 +101,17 @@ def _walk(paths: list[str]) -> list[str]:
                 ["git", "ls-files", "-z", p],
                 capture_output=True, text=True, check=True,
             ).stdout.split("\0")
-            out.extend(f for f in listed if f)
+            out.extend(f for f in listed if f and not _offlimits(f))
             continue
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
         for root, dirs, files in os.walk(p):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            out.extend(os.path.join(root, f) for f in files)
+            out.extend(
+                os.path.join(root, f)
+                for f in files
+                if not _offlimits(os.path.join(root, f))
+            )
     return [f for f in out if os.path.splitext(f)[1] in LANGS and os.path.isfile(f)]
 
 
@@ -367,10 +390,11 @@ def _check_keep_reachable(mod, comments_seen):
 
 
 def _check_gate(mod, path, src, rounds, rng, found):
-    """Mutate non-comment, non-whitespace bytes; the normal form must move or raise.
+    """Mutate non-comment, non-whitespace bytes; one mutation must move or raise.
 
     A normal form too lossy to notice is a normal form that will certify a
-    corrupting edit.
+    corrupting edit. Trying deletion and substitution as one probe avoids
+    rejecting semantically neutral spellings such as a redundant raw prefix.
     """
     starts, acc = [0], 0
     for l in src.splitlines(keepends=True):
@@ -391,19 +415,23 @@ def _check_gate(mod, path, src, rounds, rng, found):
     blind = tried = 0
     tmpdir = os.path.dirname(path) or "."
     for i in rng.sample(cands, min(rounds, len(cands))):
+        noticed = False
         for mutant in (src[:i] + src[i + 1:], src[:i] + ("Z" if src[i] != "Z" else "Q") + src[i + 1:]):
             fd, tmp = tempfile.mkstemp(dir=tmpdir, suffix=os.path.splitext(path)[1])
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(mutant)
-                tried += 1
                 try:
-                    if mod.normalize(tmp) == base:
-                        blind += 1
+                    noticed = mod.normalize(tmp) != base
                 except Exception:
-                    pass
+                    noticed = True
             finally:
                 os.unlink(tmp)
+            if noticed:
+                break
+        tried += 1
+        if not noticed:
+            blind += 1
     return tried, blind
 
 

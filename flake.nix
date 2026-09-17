@@ -32,7 +32,7 @@
           pkgs = pkgsFor system;
         in
         {
-          comments = pkgs.comments;
+          inherit (pkgs) comments;
           default = pkgs.comments;
         }
       );

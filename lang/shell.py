@@ -23,28 +23,21 @@ from functools import lru_cache
 
 EXTS = ('.sh', '.bash', '.ksh')
 
-# Directives and file-local variables, not prose: shebangs, shellcheck/nixfmt
-# pragmas, and vim/emacs mode lines.
 KEEP = re.compile(r"^#\s*(!|shellcheck|nixfmt|vi:|vim:|ex:|emacs:|-\*-|=+\s*$)")
 
-# `<<` / `<<-` followed by an optionally quoted delimiter, ignoring `<<<`.
 _HEREDOC = re.compile(r"<<(-?)\s*(?!<)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
-
-_NIXPKGS = 'nixpkgs=/persist/nixpkgs'
-
 
 class ToolchainError(RuntimeError):
     """shfmt could not be found or run."""
 
-
 class ParseError(ValueError):
     """The file does not parse; no normal form can be trusted for it."""
 
-
-def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
+@lru_cache(maxsize=8)
+def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[int]]:
     found = []
     protected: set[int] = set()
-    pending: list[tuple[str, bool]] = []   # delimiters still queued on one line
+    pending: list[tuple[str, bool]] = []
     active: tuple[str, bool] | None = None
 
     for idx, raw in enumerate(src.split('\n'), 1):
@@ -67,12 +60,10 @@ def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
         if opened:
             active, pending = opened[0], opened[1:]
 
-    return found, protected
-
+    return tuple(found), frozenset(protected)
 
 def comments(src: str) -> list[tuple[int, int, int, str]]:
-    return _scan(src)[0]
-
+    return list(_scan(src)[0])
 
 def protected_lines(src: str) -> set[int]:
     """Here-document body lines (plus the terminator, which is never blank).
@@ -80,8 +71,7 @@ def protected_lines(src: str) -> set[int]:
     A blank line in a here-doc is part of the data the script feeds downstream;
     collapsing it rewrites that payload.
     """
-    return _scan(src)[1]
-
+    return set(_scan(src)[1])
 
 @lru_cache(maxsize=1)
 def _shfmt() -> str:
@@ -90,8 +80,7 @@ def _shfmt() -> str:
         return found
     argv = ['nix-shell', '-p', 'shfmt', '--run', 'command -v shfmt']
     try:
-        proc = subprocess.run(argv, env=dict(os.environ, NIX_PATH=_NIXPKGS),
-                              capture_output=True, text=True, timeout=1800)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
     except OSError as exc:
         raise ToolchainError(
             'shfmt is not on PATH and nix-shell could not provide it: %s' % exc) from exc
@@ -99,10 +88,9 @@ def _shfmt() -> str:
     if proc.returncode != 0 or not path or not os.path.exists(path):
         raise ToolchainError(
             'cannot resolve shfmt, so no shell file can be verified.\n'
-            '  tried: PATH, then `NIX_PATH=%s %s`\n'
-            '  stderr: %s' % (_NIXPKGS, ' '.join(argv), (proc.stderr.strip() or 'none')[:400]))
+            '  tried: PATH, then `%s`\n'
+            '  stderr: %s' % (' '.join(argv), (proc.stderr.strip() or 'none')[:400]))
     return path
-
 
 def normalize(path: str) -> str:
     """Comment-free normal form; raises ParseError if `path` does not parse.

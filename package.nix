@@ -11,13 +11,13 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "comments";
-  version = "1.0.0";
+  version = "1.1.0";
 
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
       ./comments.py
-      ./lang
+      (lib.fileset.fileFilter (f: f.hasExt "py") ./lang)
     ];
   };
 
@@ -28,6 +28,7 @@ stdenvNoCC.mkDerivation {
     mkdir -p $out/share/comments $out/bin
     cp comments.py $out/share/comments/
     cp -r lang $out/share/comments/lang
+    ${python.interpreter} -m compileall -q --invalidation-mode unchecked-hash $out/share/comments
     makeWrapper ${python.interpreter} $out/bin/comments \
       --prefix PATH : ${lib.makeBinPath [ shfmt ]} \
       --add-flags "$out/share/comments/comments.py"

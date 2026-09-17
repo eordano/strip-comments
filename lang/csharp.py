@@ -28,36 +28,26 @@ from functools import lru_cache
 
 EXTS = ('.cs',)
 
-# Comment texts that are directives or machine-owned markers, not prose.
-#
-# Anchored at the start of the comment: the two XML documentation forms. They
-# are load-bearing OUTPUT, not commentary -- with GenerateDocumentationFile set
-# the compiler compiles them into the XML doc file that ships beside the
-# assembly, IDEs and analysers consume them, and a malformed one raises CS1570
-# and friends. `////` and `/***` are NOT documentation comments to the compiler
-# (a doc comment is exactly three slashes, or `/**` not followed by `*` or `/`),
-# so rule-of-three separator bars stay strippable.
 _KEEP_ANCHORED = (
-    r"///(?!/)",                                  # /// <summary> ... XML doc comment
-    r"/\*\*(?![*/])",                             # /** ... */ XML doc comment
+    r"///(?!/)",
+    r"/\*\*(?![*/])",
 )
 
-# Matched anywhere in the comment text.
 _KEEP_ANYWHERE = (
-    r"</?auto-?generated",                        # marker: suppresses analyzers, flags the file as generated
-    r"@generated",                                # same marker, linguist/review-tool spelling
-    r"DO\s+NOT\s+EDIT",                           # generated-file banner; the generator rewrites the file anyway
-    r"ReSharper\b",                               # // ReSharper disable / restore / disable once
-    r"@formatter\s*:",                            # ReSharper formatter on/off region
-    r"\bnoinspection\b",                          # Rider/ReSharper inspection suppression
-    r"\bncrunch\s*:",                             # NCrunch coverage/test directives
-    r"\blanguage\s*=",                            # Rider language injection (// language=json)
-    r"SPDX-[A-Za-z-]+",                           # licence identity
-    r"@license|@preserve|@copyright",             # licence header, minifier-preserved forms
-    r"\bcopyright\b",                             # licence header, incl. StyleCop's // <copyright file=...>
-    r"\blicen[cs]ed\s+under\b",                   # licence header prose that IS the licence grant
-    r"^//+\s*(?:vim|vi|ex)\s*:",                  # editor modelines
-    r"-\*-",                                      # emacs file variables
+    r"</?auto-?generated",
+    r"@generated",
+    r"DO\s+NOT\s+EDIT",
+    r"ReSharper\b",
+    r"@formatter\s*:",
+    r"\bnoinspection\b",
+    r"\bncrunch\s*:",
+    r"\blanguage\s*=",
+    r"SPDX-[A-Za-z-]+",
+    r"@license|@preserve|@copyright",
+    r"\bcopyright\b",
+    r"\blicen[cs]ed\s+under\b",
+    r"^//+\s*(?:vim|vi|ex)\s*:",
+    r"-\*-",
 )
 
 KEEP = re.compile(
@@ -66,26 +56,15 @@ KEEP = re.compile(
     re.IGNORECASE,
 )
 
-# U+FEFF joins the whitespace class: a UTF-8 BOM is not Python whitespace but
-# C# skips it, and it must not be able to make or break a normal-form match.
 _BOM = '\ufeff'
 
-# C# line terminators. U+2028 / U+2029 / U+0085 end a line for the compiler,
-# so they close a `//` comment and reset "start of line" as a newline does.
 _NEWLINES = '\n\u2028\u2029\u0085'
 _LINE_END = _NEWLINES + '\r'
 
-
-# Characters Python's str.splitlines() breaks on but C# does not treat as line
-# terminators. The driver splits with keepends=True, so one of these inside a
-# `//` comment would put the driver's idea of "this line" and the scanner's out
-# of step; rejecting the file is cheaper than reconciling them.
 _PSEUDO_BREAKS = '\v\f\x1c\x1d\x1e'
-
 
 class ParseError(ValueError):
     """The file does not lex as C#; no normal form can be trusted for it."""
-
 
 def _line_starts(src: str) -> list[int]:
     """Offsets of each line start, numbered exactly as the driver numbers lines.
@@ -100,11 +79,9 @@ def _line_starts(src: str) -> list[int]:
         starts.append(at)
     return starts
 
-
 def _locate(starts: list[int], off: int) -> tuple[int, int]:
     row = bisect_right(starts, off) - 1
     return row + 1, off - starts[row]
-
 
 def _end_of_line(src: str, i: int) -> int:
     """Offset of the first C# line terminator at or after `i`, else len(src)."""
@@ -113,14 +90,12 @@ def _end_of_line(src: str, i: int) -> int:
         n += 1
     return n
 
-
 def _run_of(src: str, i: int, ch: str) -> int:
     """Length of the run of `ch` starting at `i`."""
     n, j = len(src), i
     while j < n and src[j] == ch:
         j += 1
     return j - i
-
 
 def _prefix(src: str, i: int):
     """Parse a string literal's prefix at `i` -> (quote_pos, dollars, verbatim), or None.
@@ -143,7 +118,6 @@ def _prefix(src: str, i: int):
         return j, dollars, verbatim
     return None
 
-
 def _read_char(src: str, i: int) -> int:
     """End offset (exclusive) of the char literal opening at `i`."""
     n, j = len(src), i + 1
@@ -159,7 +133,6 @@ def _read_char(src: str, i: int) -> int:
         j += 1
     raise ParseError('unterminated character literal')
 
-
 def _read_hole(src: str, j: int, dollars: int, raw: bool) -> int:
     """End offset (exclusive) of an interpolation hole whose brace(s) end at `j`.
 
@@ -170,8 +143,8 @@ def _read_hole(src: str, j: int, dollars: int, raw: bool) -> int:
     why scanning it as code would misread `$"{d:yyyy//MM}"`.
     """
     n = len(src)
-    depth = 0        # ( [ { nesting inside the hole
-    fmt = False      # past the format-specifier colon
+    depth = 0
+    fmt = False
     while j < n:
         c = src[j]
 
@@ -187,7 +160,7 @@ def _read_hole(src: str, j: int, dollars: int, raw: bool) -> int:
                 j += run
                 continue
             if fmt and run >= 2:
-                j += 2                      # }} is an escaped brace in a format spec
+                j += 2
                 continue
             return j + 1
 
@@ -205,7 +178,7 @@ def _read_hole(src: str, j: int, dollars: int, raw: bool) -> int:
             continue
         if c == ':' and depth == 0:
             if j + 1 < n and src[j + 1] == ':':
-                j += 2                      # global::Foo, not a format specifier
+                j += 2
                 continue
             fmt = True
             j += 1
@@ -228,7 +201,6 @@ def _read_hole(src: str, j: int, dollars: int, raw: bool) -> int:
         j += 1
     raise ParseError('unterminated interpolation hole')
 
-
 def _read_string(src: str, i: int) -> int:
     """End offset (exclusive) of the string literal starting at `i`."""
     pre = _prefix(src, i)
@@ -243,9 +215,8 @@ def _read_string(src: str, i: int) -> int:
     if verbatim:
         return _read_verbatim(src, q + 1, dollars)
     if run >= 2:
-        return q + 2                        # "" / $"" -- the empty string
+        return q + 2
     return _read_regular(src, q + 1, dollars)
-
 
 def _read_regular(src: str, j: int, dollars: int) -> int:
     n = len(src)
@@ -260,14 +231,13 @@ def _read_regular(src: str, j: int, dollars: int) -> int:
             return j + 1
         if dollars and c in '{}':
             if j + 1 < n and src[j + 1] == c:
-                j += 2                      # {{ and }} are escaped braces
+                j += 2
                 continue
             if c == '{':
                 j = _read_hole(src, j + 1, dollars, raw=False)
                 continue
         j += 1
     raise ParseError('unterminated string literal')
-
 
 def _read_verbatim(src: str, j: int, dollars: int) -> int:
     """`@"..."`: no backslash escapes, `""` is one quote, newlines are legal."""
@@ -288,7 +258,6 @@ def _read_verbatim(src: str, j: int, dollars: int) -> int:
                 continue
         j += 1
     raise ParseError('unterminated verbatim string literal')
-
 
 def _read_raw(src: str, j: int, fence: int, dollars: int) -> int:
     """`\"\"\"...\"\"\"` with a fence of `fence` quotes; no escapes at all.
@@ -319,14 +288,6 @@ def _read_raw(src: str, j: int, fence: int, dollars: int) -> int:
         j += 1
     raise ParseError('unterminated raw string literal')
 
-
-# Maximal-munch operator table, longest first. It exists so that the normal
-# form is a TOKEN stream: a comment between two punctuators that cannot fuse
-# (`SetActives(/* empty */)`) must normalise identically once it is gone, while
-# a comment that is the ONLY thing keeping two tokens apart (`a/*c*/b`,
-# `+/*c*/+`) must not. Whitespace never enters the form at all -- token
-# boundaries come from the munch, so `a b` and `a  b` are already equal and a
-# removed comment can only show up as a fusion.
 _OPERATORS = frozenset((
     '>>>=',
     '<<=', '>>=', '>>>', '??=',
@@ -335,7 +296,6 @@ _OPERATORS = frozenset((
     '{', '}', '[', ']', '(', ')', '.', ',', ':', ';', '+', '-', '*', '/',
     '%', '&', '|', '^', '!', '~', '=', '<', '>', '?', '@', '$', '#', '\\',
 ))
-
 
 def _read_token(src: str, i: int) -> int:
     """End offset (exclusive) of the ordinary token starting at `i`.
@@ -356,9 +316,9 @@ def _read_token(src: str, i: int) -> int:
             if ch.isalnum() or ch == '_':
                 j += 1
             elif ch == '.' and j + 1 < n and src[j + 1].isdigit():
-                j += 1                      # 1.5, but not the `.` of 1.ToString()
+                j += 1
             elif ch in '+-' and not hexish and j > i and src[j - 1] in 'eE':
-                j += 1                      # 1e-3
+                j += 1
             else:
                 break
         return j
@@ -372,8 +332,7 @@ def _read_token(src: str, i: int) -> int:
     for width in (4, 3, 2, 1):
         if src[i:i + width] in _OPERATORS:
             return i + width
-    return i + 1                            # not C#, but always makes progress
-
+    return i + 1
 
 @lru_cache(maxsize=8)
 def _scan(src: str):
@@ -422,7 +381,7 @@ def _scan(src: str):
 
         if c == '/' and i + 1 < n and src[i + 1] == '/':
             j = _end_of_line(src, i)
-            text = src[i:j]     # `\r` is a terminator, so it is already excluded
+            text = src[i:j]
             line, col = _locate(starts, i)
             found.append((line, col, col + len(text), text))
             i = j
@@ -460,10 +419,8 @@ def _scan(src: str):
     flush()
     return tuple(found), frozenset(protected), '\n'.join(records)
 
-
 def comments(src: str) -> list[tuple[int, int, int, str]]:
     return list(_scan(src)[0])
-
 
 def protected_lines(src: str) -> set[int]:
     """Lines whose blankness is string content, not formatting.
@@ -475,7 +432,6 @@ def protected_lines(src: str) -> set[int]:
     rejects the file if one appears to), so they contribute nothing here.
     """
     return set(_scan(src)[1])
-
 
 def normalize(path: str) -> str:
     """Comment-free normal form; raises ParseError if `path` does not lex.

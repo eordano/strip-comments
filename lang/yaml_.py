@@ -1,14 +1,18 @@
 """YAML language module. A comment is '#' to end of line and always single-line."""
 
 import re
-
-import yaml
+from functools import lru_cache
 
 EXTS = ('.yml', '.yaml')
 
-# Every branch is anchored on '#' because the driver tests KEEP with .match()
-# against text that always starts at the comment marker: an unanchored
-# alternative can never fire, however well it describes the directive.
+class ParseError(ValueError):
+    """This file cannot be proved, so it must not be stripped.
+
+    The driver catches it and reports `skip:does not parse (ParseError)`,
+    which is the correct outcome for both reasons it is raised: YAML that
+    does not load, and a machine without PyYAML to load it with.
+    """
+
 KEEP = re.compile(
     r"""
     ^\# (?:
@@ -25,16 +29,12 @@ KEEP = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
-# '|', '>', with any combination of chomping indicator and explicit indentation.
 _BLOCK_HEADER = re.compile(r'^[|>](?:[+-]\d*|\d*[+-]?)$')
 
-# Characters after which a quote can begin a scalar rather than sit inside one.
 _SCALAR_INTRO = ':-,[{'
-
 
 def _is_doc_marker(line):
     return line[:3] in ('---', '...') and (len(line) == 3 or line[3] in ' \t')
-
 
 def _opens_scalar(line, i):
     """Can the quote at `i` begin a scalar, rather than sit inside a plain one?
@@ -45,7 +45,6 @@ def _opens_scalar(line, i):
     """
     head = line[:i].rstrip()
     return not head or head[-1] in _SCALAR_INTRO
-
 
 def _comment_col(line, quote=None, flow=0):
     """(column of the comment-opening '#' or None, quote open at line end, flow).
@@ -85,7 +84,7 @@ def _comment_col(line, quote=None, flow=0):
                 quote = None
             i += 1
         elif c == '#' and (i == 0 or line[i - 1] in ' \t'):
-            return i, None, flow    # rest of the line is comment; nothing is open
+            return i, None, flow
         elif c in '"\'' and (i == 0 or line[i - 1] in ' \t,[{'
                              or (flow and line[i - 1] == ':')):
             quote = c
@@ -98,7 +97,6 @@ def _comment_col(line, quote=None, flow=0):
                 flow -= 1
             i += 1
     return None, (quote if carry else None), flow
-
 
 def _block_header_parent(code):
     """(indent a block scalar's body must exceed, keeps trailing blanks?) or None.
@@ -113,13 +111,11 @@ def _block_header_parent(code):
     if not _BLOCK_HEADER.match(tok):
         return None
     indent = len(body) - len(body.lstrip(' '))
-    # A header alone on its line belongs to the mapping key on the line above,
-    # so its body may sit at the same indent as the header itself.
     if body.lstrip(' ') == tok:
         indent -= 1
     return indent, '+' in tok
 
-
+@lru_cache(maxsize=8)
 def _scan(src):
     """Single pass yielding (comments, lines whose blankness is content).
 
@@ -134,18 +130,13 @@ def _scan(src):
     """
     found = []
     protected = set()
-    pending = []          # blanks that count as body only if the body resumes
-    block = None          # (parent indent, keeps trailing blanks) inside a body
-    quote = None          # quoted scalar left open by the previous line
-    flow = 0              # '['/'{' nesting depth left open by the previous line
-    gap = []              # blanks outside a block, awaiting the next real line
-    prev_indent = None    # indent of the last non-blank line outside a block
+    pending = []
+    block = None
+    quote = None
+    flow = 0
+    gap = []
+    prev_indent = None
 
-    # splitlines(), not split('\n'): the driver addresses lines with
-    # splitlines(keepends=True), which also breaks on a lone '\r' and on
-    # U+0085 / U+2028 / U+2029 -- all of which PyYAML likewise reads as line
-    # breaks. Numbering lines any other way desynchronises module and driver,
-    # and the excision lands on the wrong line.
     for idx, line in enumerate(src.splitlines(), 1):
 
         if block is not None:
@@ -158,16 +149,12 @@ def _scan(src):
                 pending.clear()
                 protected.add(idx)
                 continue
-            # Body over. Its trailing blanks are value only under '+' chomping;
-            # otherwise they are clipped and their blankness carries nothing.
             if block[1]:
                 protected.update(pending)
             block = None
             pending.clear()
 
         if not line.strip():
-            # Inside a quoted scalar the carried quote settles it outright; a
-            # continuation may even sit at column 0, so indentation cannot.
             if quote is not None:
                 protected.add(idx)
             else:
@@ -176,11 +163,6 @@ def _scan(src):
 
         indent = len(line) - len(line.lstrip(' '))
         if gap:
-            # A multi-line scalar's continuation is indented further than the
-            # line that opened it, while the next sibling of a node never is.
-            # Deeper text after a blank run therefore means the run sits inside
-            # a scalar. Over-protecting here only leaves a blank run standing
-            # under --collapse-blanks; under-protecting rewrites a value.
             if prev_indent is not None and indent > prev_indent:
                 protected.update(gap)
             gap.clear()
@@ -190,22 +172,18 @@ def _scan(src):
         if col is not None:
             found.append((idx, col, len(line), line[col:]))
 
-        # A trailing '|' inside an unterminated quoted scalar is text, not a header.
         if quote is None:
             block = _block_header_parent(line if col is None else line[:col])
 
     if block is not None and block[1]:
         protected.update(pending)
-    return found, protected
-
+    return tuple(found), frozenset(protected)
 
 def comments(src):
-    return _scan(src)[0]
-
+    return list(_scan(src)[0])
 
 def protected_lines(src):
-    return _scan(src)[1]
-
+    return set(_scan(src)[1])
 
 def normalize(path):
     """Comment-free normal form; raises if `path` does not parse.
@@ -219,6 +197,13 @@ def normalize(path):
     """
     with open(path, encoding='utf-8') as fh:
         src = fh.read()
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - environment-dependent
+        raise ParseError(
+            '%s: PyYAML is needed to prove a YAML strip is safe (pip install pyyaml)' % path
+        ) from exc
+
     docs = list(yaml.safe_load_all(src))
     return yaml.safe_dump_all(
         docs,

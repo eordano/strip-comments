@@ -18,15 +18,14 @@ from __future__ import annotations
 
 import bisect
 import subprocess
+from functools import lru_cache
 
 EXTS = ('.nix',)
 
 KEEP = None
 
-
 class ParseError(ValueError):
     """The file does not parse; no normal form can be trusted for it."""
-
 
 def _line_starts(src: str) -> list[int]:
     starts = [0]
@@ -36,18 +35,17 @@ def _line_starts(src: str) -> list[int]:
         i = src.find('\n', i + 1)
     return starts
 
-
 def _locate(starts: list[int], off: int) -> tuple[int, int]:
     row = bisect.bisect_right(starts, off) - 1
     return row + 1, off - starts[row]
 
-
-def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
+@lru_cache(maxsize=8)
+def _scan(src: str) -> tuple[tuple[tuple[int, int, int, str], ...], frozenset[int]]:
     starts = _line_starts(src)
     found = []
-    spans: list[tuple[int, int]] = []   # offset ranges holding string CONTENT
+    spans: list[tuple[int, int]] = []
     stack = ['code']
-    open_at = None                      # start of the current string-content run
+    open_at = None
     i, n = 0, len(src)
 
     def record(a: int, b: int) -> None:
@@ -61,7 +59,7 @@ def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
             if c == '}' and len(stack) > 1:
                 stack.pop()
                 i += 1
-                open_at = i             # back inside the enclosing string
+                open_at = i
                 continue
             if c == '#':
                 j = i
@@ -101,9 +99,9 @@ def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
                 i += 1
                 open_at = None
                 continue
-        else:  # 'ind'
+        else:
             if c == "'" and i + 2 < n and src[i + 1] == "'" and src[i + 2] in "'$\\":
-                i += 3                  # '''  ''${  ''\x -- two-quote escape
+                i += 3
                 continue
             if c == "'" and i + 1 < n and src[i + 1] == "'":
                 spans.append((open_at, i))
@@ -128,12 +126,10 @@ def _scan(src: str) -> tuple[list[tuple[int, int, int, str]], set[int]]:
         while k != -1 and k < b:
             protected.add(_locate(starts, k)[0])
             k = src.find('\n', k + 1)
-    return found, protected
-
+    return tuple(found), frozenset(protected)
 
 def comments(src: str) -> list[tuple[int, int, int, str]]:
-    return _scan(src)[0]
-
+    return list(_scan(src)[0])
 
 def protected_lines(src: str) -> set[int]:
     """Lines whose blankness is string content, not formatting.
@@ -142,8 +138,7 @@ def protected_lines(src: str) -> set[int]:
     dropping it rewrites the embedded script the string carries. Lines inside a
     ${...} interpolation are code again, and are not protected.
     """
-    return _scan(src)[1]
-
+    return set(_scan(src)[1])
 
 def normalize(path: str) -> str:
     """Comment-free normal form; raises ParseError if `path` does not parse.
