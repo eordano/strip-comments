@@ -201,7 +201,7 @@ def normalize(path):
         import yaml
     except ModuleNotFoundError as exc:  # pragma: no cover - environment-dependent
         raise ParseError(
-            '%s: PyYAML is needed to prove a YAML strip is safe (pip install pyyaml)' % path
+            '%s: PyYAML is needed to prove a YAML strip is safe (uv pip install pyyaml, or uv run --with pyyaml)' % path
         ) from exc
 
     docs = list(yaml.safe_load_all(src))

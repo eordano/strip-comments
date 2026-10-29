@@ -237,7 +237,7 @@ def _resolve_typescript(start_dir: str) -> str:
     raise ToolchainError(
         "cannot resolve the 'typescript' package, so no JS/TS file can be verified.\n"
         "  tried:\n    " + "\n    ".join(problems) +
-        "\n  fix: npm install typescript in the repo, set NODE_PATH, or make nix available")
+        "\n  fix: pnpm add -D typescript in the repo, set NODE_PATH, or make nix available")
 
 def _run(request: dict, start_dir: str) -> dict:
     request = dict(request, tsPath=_resolve_typescript(start_dir))

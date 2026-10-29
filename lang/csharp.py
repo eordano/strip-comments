@@ -207,7 +207,6 @@ def _read_string(src: str, i: int) -> int:
     if pre is None:
         raise ParseError('not a string literal')
     q, dollars, verbatim = pre
-    n = len(src)
     run = _run_of(src, q, '"')
 
     if not verbatim and run >= 3:
